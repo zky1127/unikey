@@ -36,7 +36,7 @@ jobs:
       - run: npm install
       - name: Build macOS binary
         working-directory: src-tauri
-        run: cargo build --release 2>&1 | tail -50
+        run: cargo build --release
       - name: Create app bundle
         run: |
           mkdir -p UniKey.app/Contents/MacOS
@@ -60,12 +60,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
       - run: npm install
-      - name: Build Linux binary
-        working-directory: src-tauri
-        run: cargo build --release 2>&1 | tail -50
-      - name: Build Linux (Tauri bundle)
-        run: npx tauri build --verbose 2>&1 | tail -50
-        continue-on-error: true
+      - name: Build Linux
+        run: npx tauri build --bundles deb
       - uses: actions/upload-artifact@v4
         with:
           name: UniKey-Linux-x64
