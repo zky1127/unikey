@@ -34,12 +34,20 @@ jobs:
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install
-      - name: Build macOS Intel
-        run: npx tauri build --bundles dmg --target x86_64-apple-darwin
+      - name: Build macOS
+        run: npx tauri build --verbose
+        env:
+          APPLE_CERTIFICATE: ""
+          APPLE_CERTIFICATE_PASSWORD: ""
+          APPLE_SIGNING_IDENTITY: ""
+          APPLE_TEAM_ID: ""
+      - run: ls -la src-tauri/target/release/bundle/ || true
       - uses: actions/upload-artifact@v4
         with:
-          name: UniKey-macOS-x64
-          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          name: UniKey-macOS-arm64
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
         if: always()
 
   build-linux:
@@ -54,7 +62,8 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
       - run: npm install
       - name: Build Linux
-        run: npx tauri build --bundles deb,appimage
+        run: npx tauri build --verbose
+      - run: ls -la src-tauri/target/release/bundle/ || true
       - uses: actions/upload-artifact@v4
         with:
           name: UniKey-Linux-x64
