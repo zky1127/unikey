@@ -333,6 +333,98 @@ mod tests {
     }
 
     #[test]
+    fn test_anthropic_format_conversion() {
+        // Test OpenAI → Anthropic message conversion
+        let anthropic_body = serde_json::json!({
+            "model": "claude-sonnet-5-20251001",
+            "max_tokens": 1024,
+            "system": "You are a helpful assistant",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+                {"role": "user", "content": "How are you?"}
+            ]
+        });
+
+        let translator = crate::proxy::format::FormatTranslator::new();
+        let internal = translator.anthropic_to_internal(&anthropic_body);
+
+        assert_eq!(internal.messages.len(), 4); // system + 3 messages
+        assert_eq!(internal.messages[0].role, "system");
+        assert_eq!(internal.messages[1].role, "user");
+        assert_eq!(internal.messages[1].content, crate::providers::MessageContent::Text("Hello".into()));
+        assert_eq!(internal.messages[2].role, "assistant");
+        assert_eq!(internal.max_tokens, 1024);
+
+        // Test internal → Anthropic response conversion
+        let response = crate::providers::ChatResponse {
+            id: "msg_123".into(),
+            object: "chat.completion".into(),
+            created: 1000,
+            model: "claude-sonnet-5".into(),
+            choices: vec![crate::providers::Choice {
+                index: 0,
+                message: crate::providers::Message {
+                    role: "assistant".into(),
+                    content: crate::providers::MessageContent::Text("Hi!".into()),
+                },
+                finish_reason: Some("stop".into()),
+            }],
+            usage: crate::providers::Usage {
+                prompt_tokens: 10,
+                completion_tokens: 2,
+                total_tokens: 12,
+            },
+        };
+
+        let anthropic_resp = translator.internal_to_anthropic(&response);
+        assert_eq!(anthropic_resp["type"], "message");
+        assert_eq!(anthropic_resp["role"], "assistant");
+        assert_eq!(anthropic_resp["content"][0]["text"], "Hi!");
+        assert_eq!(anthropic_resp["usage"]["input_tokens"], 10);
+    }
+
+    #[test]
+    fn test_provider_registry() {
+        let registry = crate::providers::ProviderRegistry::new();
+        assert!(registry.get("openai").is_some());
+        assert!(registry.get("anthropic").is_some());
+        assert!(registry.get("deepseek").is_some());
+        assert!(registry.get("qwen").is_some());
+        assert!(registry.get("zhipu").is_some());
+        assert!(registry.get("moonshot").is_some());
+        assert!(registry.get("gemini").is_some());
+        assert!(registry.get("baichuan").is_some());
+        assert!(registry.get("doubao").is_some());
+        assert!(registry.get("minimax").is_some());
+        assert!(registry.get("ollama").is_some());
+    }
+
+    #[test]
+    fn test_recommendation_engine() {
+        let needs = crate::recommend::UserNeeds {
+            scenarios: vec!["编程".into(), "写作".into()],
+            budget: crate::recommend::Budget::Balanced,
+            quality: crate::recommend::Quality::Good,
+            language: crate::recommend::Language::Chinese,
+        };
+        let results = crate::recommend::recommend(&needs);
+        assert!(!results.is_empty());
+        // Should have at least programming and content creation recommendations
+        assert!(results.iter().any(|r| r.name.contains("编程")));
+        assert!(results.iter().any(|r| r.name.contains("创作")));
+    }
+
+    #[test]
+    fn test_presets_exist() {
+        let presets = crate::recommend::get_presets();
+        assert_eq!(presets.len(), 7);
+        assert!(presets.iter().any(|p| p.id == "code-master"));
+        assert!(presets.iter().any(|p| p.id == "content-creator"));
+        assert!(presets.iter().any(|p| p.id == "budget"));
+    }
+
+    #[test]
     fn test_route_keyword_matching() {
         let storage = test_storage();
 

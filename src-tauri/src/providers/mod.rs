@@ -28,20 +28,20 @@ fn default_temperature() -> f64 { 1.0 }
 fn default_top_p() -> f64 { 1.0 }
 fn default_max_tokens() -> u32 { 4096 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
     pub content: MessageContent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
     Parts(Vec<ContentPart>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContentPart {
     #[serde(rename = "type")]
     pub content_type: String,
@@ -49,7 +49,7 @@ pub struct ContentPart {
     pub image_url: Option<ImageUrl>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImageUrl {
     pub url: String,
 }
