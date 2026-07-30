@@ -34,21 +34,20 @@ jobs:
         with: { node-version: "22" }
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install
-      - name: Build macOS
-        run: npx tauri build --verbose
-        env:
-          APPLE_CERTIFICATE: ""
-          APPLE_CERTIFICATE_PASSWORD: ""
-          APPLE_SIGNING_IDENTITY: ""
-          APPLE_TEAM_ID: ""
-      - run: ls -la src-tauri/target/release/bundle/ || true
+      - name: Build macOS binary
+        working-directory: src-tauri
+        run: cargo build --release
+      - name: Create app bundle
+        run: |
+          mkdir -p UniKey.app/Contents/MacOS
+          mkdir -p UniKey.app/Contents/Resources
+          cp src-tauri/target/release/unikey UniKey.app/Contents/MacOS/
+          cp -r dist UniKey.app/Contents/Resources/
+          echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>unikey</string><key>CFBundleIdentifier</key><string>com.zky1127.unikey</string><key>CFBundleName</key><string>UniKey</string><key>CFBundleVersion</key><string>0.1.0</string></dict></plist>' > UniKey.app/Contents/Info.plist
       - uses: actions/upload-artifact@v4
         with:
           name: UniKey-macOS-arm64
-          path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
-        if: always()
+          path: UniKey.app
 
   build-linux:
     runs-on: ubuntu-22.04
