@@ -19,9 +19,16 @@ impl Provider for DeepSeekProvider {
         "deepseek"
     }
 
-    async fn chat(&self, request: &ChatRequest, api_key: &str) -> Result<ChatResponse, String> {
+    async fn chat(
+        &self,
+        request: &ChatRequest,
+        api_key: &str,
+        base_url: Option<&str>,
+    ) -> Result<ChatResponse, String> {
         let model = request.model.clone().unwrap_or_else(|| "deepseek-chat".into());
-        let url = "https://api.deepseek.com/v1/chat/completions";
+        let url = base_url
+            .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
+            .unwrap_or_else(|| "https://api.deepseek.com/v1/chat/completions".to_string());
 
         let payload = serde_json::json!({
             "model": model,
@@ -73,6 +80,7 @@ impl Provider for DeepSeekProvider {
         &self,
         _request: &ChatRequest,
         _api_key: &str,
+        _base_url: Option<&str>,
     ) -> Result<
         Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>,
         String,

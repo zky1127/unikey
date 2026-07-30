@@ -20,9 +20,16 @@ impl Provider for AnthropicProvider {
         "anthropic"
     }
 
-    async fn chat(&self, request: &ChatRequest, api_key: &str) -> Result<ChatResponse, String> {
+    async fn chat(
+        &self,
+        request: &ChatRequest,
+        api_key: &str,
+        base_url: Option<&str>,
+    ) -> Result<ChatResponse, String> {
         let model = request.model.clone().unwrap_or_else(|| "claude-sonnet-5-20251001".into());
-        let url = "https://api.anthropic.com/v1/messages";
+        let url = base_url
+            .map(|u| format!("{}/messages", u.trim_end_matches('/')))
+            .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string());
 
         // 转换 OpenAI messages → Anthropic messages
         let (system, messages) = convert_messages(&request.messages);
@@ -69,6 +76,7 @@ impl Provider for AnthropicProvider {
         &self,
         _request: &ChatRequest,
         _api_key: &str,
+        _base_url: Option<&str>,
     ) -> Result<
         Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>,
         String,

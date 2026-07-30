@@ -1,6 +1,7 @@
 pub mod openai;
 pub mod anthropic;
 pub mod deepseek;
+pub mod qwen;
 
 use serde::{Deserialize, Serialize};
 
@@ -106,12 +107,18 @@ pub struct StreamDelta {
 pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
     /// 调用模型（非流式）
-    async fn chat(&self, request: &ChatRequest, api_key: &str) -> Result<ChatResponse, String>;
+    async fn chat(
+        &self,
+        request: &ChatRequest,
+        api_key: &str,
+        base_url: Option<&str>,
+    ) -> Result<ChatResponse, String>;
     /// 调用模型（流式）
     async fn chat_stream(
         &self,
         request: &ChatRequest,
         api_key: &str,
+        base_url: Option<&str>,
     ) -> Result<
         Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>,
         String,
@@ -138,6 +145,10 @@ impl ProviderRegistry {
             Arc::new(anthropic::AnthropicProvider::new()),
         );
         registry.register("deepseek", Arc::new(deepseek::DeepSeekProvider::new()));
+        registry.register("qwen", Arc::new(qwen::QwenProvider::new()));
+        registry.register("zhipu", Arc::new(qwen::ZhipuProvider::new()));
+        registry.register("moonshot", Arc::new(qwen::MoonshotProvider::new()));
+        registry.register("gemini", Arc::new(qwen::GeminiProvider::new()));
         registry
     }
 

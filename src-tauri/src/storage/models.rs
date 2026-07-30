@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// 加密存储的 API Key
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderKey {
     pub id: String,
     pub name: String,           // 用户自定义名称，如 "我的DeepSeek"
@@ -13,6 +14,7 @@ pub struct ProviderKey {
 
 /// 微调后的模型配置（一个 ProviderKey 可以有多个配置）
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelConfig {
     pub id: String,
     pub provider_key_id: String,  // 关联的 ProviderKey
@@ -30,6 +32,7 @@ pub struct ModelConfig {
 
 /// 场景路由规则
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RouteRule {
     pub id: String,
     pub condition: RouteCondition,
@@ -73,6 +76,7 @@ pub enum ModelCapability {
 
 /// 场景 = 一组路由规则的集合
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Scene {
     pub id: String,
     pub name: String,             // 场景名，如 "编程全能"
@@ -84,6 +88,7 @@ pub struct Scene {
 
 /// 统一 Key
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UnifiedKey {
     pub id: String,
     pub key_value: String,        // sk-unikey-xxxx
@@ -96,6 +101,7 @@ pub struct UnifiedKey {
 
 /// 代理请求日志
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProxyLog {
     pub id: String,
     pub unified_key_id: String,

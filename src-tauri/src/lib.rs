@@ -154,7 +154,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // 确定数据目录
             let app_dir = app
                 .path()
                 .app_data_dir()
@@ -162,12 +161,9 @@ pub fn run() {
             std::fs::create_dir_all(&app_dir).ok();
 
             let db_path = app_dir.join("unikey.db");
-
-            // 初始化存储（用机器 ID 派生加密密钥）
             let machine_id = app.config().identifier.clone();
             let storage = Arc::new(Storage::new(db_path, &machine_id)?);
 
-            // 初始化 Provider 注册表
             let registry = Arc::new(ProviderRegistry::new());
 
             app.manage(AppState {
@@ -204,4 +200,196 @@ fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+// ============ Integration Tests ============
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::ChatRequest;
+    use crate::proxy::router::Router;
+
+    fn test_storage() -> Storage {
+        Storage::new(
+            std::path::PathBuf::from(":memory:"),
+            "test-password",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_full_pipeline() {
+        let storage = test_storage();
+
+        // 1. Add a provider key
+        let pk = ProviderKey {
+            id: "pk-1".into(),
+            name: "Test Key".into(),
+            provider: "openai".into(),
+            encrypted_key: storage.encrypt("sk-test-api-key").unwrap(),
+            base_url: None,
+            created_at: 1,
+        };
+        storage.save_provider_key(&pk).unwrap();
+
+        let keys = storage.list_provider_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].name, "Test Key");
+
+        // 2. Create a model config
+        let config = ModelConfig {
+            id: "cfg-1".into(),
+            provider_key_id: "pk-1".into(),
+            name: "Test Config".into(),
+            model: "gpt-4o".into(),
+            temperature: 0.7,
+            top_p: 0.9,
+            max_tokens: 2048,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+            system_prompt: None,
+            extra_params: None,
+            created_at: 1,
+        };
+        storage.save_model_config(&config).unwrap();
+
+        let configs = storage.list_model_configs().unwrap();
+        assert_eq!(configs.len(), 1);
+
+        // 3. Create a scene with routing rule
+        let scene = Scene {
+            id: "scene-1".into(),
+            name: "Test Scene".into(),
+            description: "Integration test".into(),
+            rules: vec![RouteRule {
+                id: "rule-1".into(),
+                condition: RouteCondition::Always,
+                model_config_id: "cfg-1".into(),
+                priority: 1,
+            }],
+            created_at: 1,
+            updated_at: 1,
+        };
+        storage.save_scene(&scene).unwrap();
+
+        // 4. Generate unified key
+        let uk = UnifiedKey {
+            id: "uk-1".into(),
+            key_value: "sk-unikey-testkey000000000000001".into(),
+            scene_id: "scene-1".into(),
+            name: "Test UK".into(),
+            created_at: 1,
+            last_used_at: None,
+            usage_count: 0,
+        };
+        storage.save_unified_key(&uk).unwrap();
+
+        let keys = storage.list_unified_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].key_value, "sk-unikey-testkey000000000000001");
+
+        // 5. Test router resolution
+        let router = Router::new();
+        let resolved = router.resolve(&storage, "sk-unikey-testkey000000000000001").unwrap();
+        assert_eq!(resolved.configs.len(), 1);
+        assert_eq!(resolved.api_keys.len(), 1);
+
+        let request = ChatRequest {
+            model: Some("gpt-4o".into()),
+            messages: vec![],
+            stream: false,
+            temperature: 1.0,
+            top_p: 1.0,
+            max_tokens: 4096,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+        };
+
+        let resolution = router.decide(&resolved, &request).unwrap();
+        assert_eq!(resolution.provider, "openai");
+        assert_eq!(resolution.model, "gpt-4o");
+        assert_eq!(resolution.api_key, "sk-test-api-key");
+        assert!((resolution.temperature - 0.7).abs() < 0.01);
+
+        // 6. Verify encryption roundtrip
+        let decrypted = storage.decrypt(&pk.encrypted_key).unwrap();
+        assert_eq!(decrypted, "sk-test-api-key");
+    }
+
+    #[test]
+    fn test_route_keyword_matching() {
+        let storage = test_storage();
+
+        // Setup: two configs, keyword-routed scene
+        let pk = ProviderKey {
+            id: "pk-x".into(),
+            name: "Key".into(),
+            provider: "deepseek".into(),
+            encrypted_key: storage.encrypt("sk-code-key").unwrap(),
+            base_url: None,
+            created_at: 1,
+        };
+        storage.save_provider_key(&pk).unwrap();
+
+        let config = ModelConfig {
+            id: "cfg-code".into(),
+            provider_key_id: "pk-x".into(),
+            name: "Code Config".into(),
+            model: "deepseek-chat".into(),
+            temperature: 0.3,
+            top_p: 1.0,
+            max_tokens: 8192,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+            system_prompt: None,
+            extra_params: None,
+            created_at: 1,
+        };
+        storage.save_model_config(&config).unwrap();
+
+        let scene = Scene {
+            id: "scene-kw".into(),
+            name: "Keyword Scene".into(),
+            description: "".into(),
+            rules: vec![RouteRule {
+                id: "rule-kw".into(),
+                condition: RouteCondition::Keyword {
+                    keywords: vec!["写代码".into(), "编程".into()],
+                },
+                model_config_id: "cfg-code".into(),
+                priority: 1,
+            }],
+            created_at: 1,
+            updated_at: 1,
+        };
+        storage.save_scene(&scene).unwrap();
+
+        let uk = UnifiedKey {
+            id: "uk-kw".into(),
+            key_value: "sk-unikey-kwtest0000000000000001".into(),
+            scene_id: "scene-kw".into(),
+            name: "Test".into(),
+            created_at: 1,
+            last_used_at: None,
+            usage_count: 0,
+        };
+        storage.save_unified_key(&uk).unwrap();
+
+        let router = Router::new();
+        let resolved = router.resolve(&storage, "sk-unikey-kwtest0000000000000001").unwrap();
+
+        // Request about code → should match
+        let code_req = ChatRequest {
+            model: None,
+            messages: vec![crate::providers::Message {
+                role: "user".into(),
+                content: crate::providers::MessageContent::Text("帮我写代码实现一个排序算法".into()),
+            }],
+            stream: false, temperature: 1.0, top_p: 1.0, max_tokens: 4096,
+            frequency_penalty: 0.0, presence_penalty: 0.0,
+        };
+        let result = router.decide(&resolved, &code_req).unwrap();
+        assert_eq!(result.model, "deepseek-chat");
+    }
 }

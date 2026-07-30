@@ -9,7 +9,6 @@ use axum::{
     Json, Router,
 };
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::providers::*;
 use crate::storage::Storage;
@@ -21,8 +20,8 @@ use format::FormatTranslator;
 pub struct ProxyState {
     pub storage: Arc<Storage>,
     pub registry: Arc<ProviderRegistry>,
-    pub router: Arc<Mutex<UniKeyRouter>>,
-    pub translator: Arc<FormatTranslator>,
+    pub router: UniKeyRouter,
+    pub translator: FormatTranslator,
 }
 
 /// 启动代理服务器
@@ -31,22 +30,16 @@ pub async fn start_proxy(
     storage: Arc<Storage>,
     registry: Arc<ProviderRegistry>,
 ) -> Result<tokio::task::JoinHandle<()>, String> {
-    let router = Arc::new(Mutex::new(UniKeyRouter::new()));
-    let translator = Arc::new(FormatTranslator::new());
-
     let state = Arc::new(ProxyState {
         storage,
         registry,
-        router,
-        translator,
+        router: UniKeyRouter::new(),
+        translator: FormatTranslator::new(),
     });
 
     let app = Router::new()
-        // OpenAI 兼容端点
         .route("/v1/chat/completions", post(chat_completions))
-        // Anthropic 兼容端点
         .route("/v1/messages", post(anthropic_messages))
-        // 健康检查
         .route("/health", axum::routing::get(health))
         .with_state(state);
 
@@ -71,48 +64,58 @@ async fn chat_completions(
     // 1. 提取统一 Key
     let unified_key = extract_unified_key(&headers)?;
 
-    // 2. 验证并获取场景配置
-    let scene = state
+    // 2. 解析场景 — 预加载所有配置 + 解密 Key
+    let resolved = state
         .router
-        .lock()
-        .await
         .resolve(&state.storage, &unified_key)
-        .await
         .map_err(AppError::internal)?;
 
     // 3. 解析请求
-    let request: ChatRequest =
+    let mut request: ChatRequest =
         serde_json::from_str(&body).map_err(|e| AppError::bad_request(e.to_string()))?;
 
-    // 4. 路由决策：选择 provider + 模型
+    // 4. 路由决策
     let resolution = state
         .router
-        .lock()
-        .await
-        .decide(&scene, &request)
-        .await
+        .decide(&resolved, &request)
         .map_err(AppError::internal)?;
 
-    // 5. 获取 Provider
+    // 5. 用配置参数覆盖请求（用户微调的参数生效）
+    request.model = Some(resolution.model.clone());
+    request.temperature = resolution.temperature;
+    request.top_p = resolution.top_p;
+    request.max_tokens = resolution.max_tokens;
+
+    // 6. 获取 Provider
     let provider = state
         .registry
         .get(&resolution.provider)
         .ok_or_else(|| AppError::internal(format!("Unknown provider: {}", resolution.provider)))?;
 
-    // 6. 翻译请求格式
+    // 7. 翻译请求格式
     let translated_request = state
         .translator
         .translate_request(&request, &resolution.target_format);
 
-    // 7. 调用真实 API
+    // 8. 调用真实 API
     let start = std::time::Instant::now();
-    let result = provider.chat(&translated_request, &resolution.api_key).await;
+    let result = provider
+        .chat(&translated_request, &resolution.api_key, resolution.base_url.as_deref())
+        .await;
     let _latency = start.elapsed().as_millis() as u64;
 
-    // 8. 记录日志
-    // TODO: log to storage
+    // 9. 记录使用日志
+    log_proxy_request(
+        &state.storage,
+        &unified_key,
+        &resolution.provider,
+        &resolution.model,
+        _latency,
+        result.is_ok(),
+        result.as_ref().err().map(|e| e.as_str()),
+    );
 
-    // 9. 翻译响应回 OpenAI 格式
+    // 10. 翻译响应回 OpenAI 格式
     match result {
         Ok(response) => {
             let final_response = state
@@ -143,30 +146,26 @@ async fn anthropic_messages(
 ) -> Result<Response, AppError> {
     let unified_key = extract_unified_key_anthropic(&headers)?;
 
-    let scene = state
+    let resolved = state
         .router
-        .lock()
-        .await
         .resolve(&state.storage, &unified_key)
-        .await
         .map_err(AppError::internal)?;
 
-    // 解析 Anthropic 请求
     let anthropic_req: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| AppError::bad_request(e.to_string()))?;
 
-    // 转换为内部格式
-    let request = state
-        .translator
-        .anthropic_to_internal(&anthropic_req);
+    let mut request = state.translator.anthropic_to_internal(&anthropic_req);
 
     let resolution = state
         .router
-        .lock()
-        .await
-        .decide(&scene, &request)
-        .await
+        .decide(&resolved, &request)
         .map_err(AppError::internal)?;
+
+    // Apply config parameters
+    request.model = Some(resolution.model.clone());
+    request.temperature = resolution.temperature;
+    request.top_p = resolution.top_p;
+    request.max_tokens = resolution.max_tokens;
 
     let provider = state
         .registry
@@ -177,11 +176,24 @@ async fn anthropic_messages(
         .translator
         .translate_request(&request, &resolution.target_format);
 
-    let result = provider.chat(&translated_request, &resolution.api_key).await;
+    let start = std::time::Instant::now();
+    let result = provider
+        .chat(&translated_request, &resolution.api_key, resolution.base_url.as_deref())
+        .await;
+    let _latency = start.elapsed().as_millis() as u64;
+
+    log_proxy_request(
+        &state.storage,
+        &unified_key,
+        &resolution.provider,
+        &resolution.model,
+        _latency,
+        result.is_ok(),
+        result.as_ref().err().map(|e| e.as_str()),
+    );
 
     match result {
         Ok(response) => {
-            // 转换回 Anthropic 格式
             let anthropic_response = state.translator.internal_to_anthropic(&response);
             Ok(Json(anthropic_response).into_response())
         }
@@ -204,7 +216,8 @@ async fn health() -> &'static str {
     "UniKey Proxy Running"
 }
 
-/// 从 OpenAI 格式请求头提取统一 Key
+// ========== Helpers ==========
+
 fn extract_unified_key(headers: &HeaderMap) -> Result<String, AppError> {
     let auth = headers
         .get("Authorization")
@@ -216,13 +229,41 @@ fn extract_unified_key(headers: &HeaderMap) -> Result<String, AppError> {
         .ok_or_else(|| AppError::unauthorized("Invalid Authorization format"))
 }
 
-/// 从 Anthropic 格式请求头提取统一 Key
 fn extract_unified_key_anthropic(headers: &HeaderMap) -> Result<String, AppError> {
     headers
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .ok_or_else(|| AppError::unauthorized("Missing x-api-key header"))
+}
+
+fn log_proxy_request(
+    storage: &Storage,
+    unified_key: &str,
+    provider: &str,
+    model: &str,
+    latency_ms: u64,
+    success: bool,
+    error: Option<&str>,
+) {
+    use crate::storage::models::ProxyLog;
+    let log = ProxyLog {
+        id: uuid::Uuid::new_v4().to_string(),
+        unified_key_id: unified_key.to_string(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+        provider: provider.to_string(),
+        model: model.to_string(),
+        input_tokens: None,
+        output_tokens: None,
+        latency_ms,
+        success,
+        error: error.map(|s| s.to_string()),
+    };
+    // Non-critical; ignore errors
+    let _ = storage.save_proxy_log(&log);
 }
 
 // ========== Error Handling ==========
@@ -234,22 +275,13 @@ struct AppError {
 
 impl AppError {
     fn bad_request(msg: String) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: msg,
-        }
+        Self { status: StatusCode::BAD_REQUEST, message: msg }
     }
     fn unauthorized(msg: &str) -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            message: msg.to_string(),
-        }
+        Self { status: StatusCode::UNAUTHORIZED, message: msg.to_string() }
     }
     fn internal(msg: String) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: msg,
-        }
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg }
     }
 }
 

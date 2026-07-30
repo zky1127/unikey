@@ -170,7 +170,7 @@ impl Storage {
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
-                let extra: Option<String> = row.get(11)?;
+                let extra: Option<String> = row.get(10)?;
                 Ok(ModelConfig {
                     id: row.get(0)?,
                     provider_key_id: row.get(1)?,
@@ -184,7 +184,7 @@ impl Storage {
                     system_prompt: row.get(9)?,
                     extra_params: extra
                         .and_then(|s| serde_json::from_str(&s).ok()),
-                    created_at: row.get(12)?,
+                    created_at: row.get(11)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -317,6 +317,23 @@ impl Storage {
         conn.execute(
             "UPDATE unified_keys SET last_used_at = ?1, usage_count = usage_count + 1 WHERE key_value = ?2",
             rusqlite::params![now, key_value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ============ Proxy Log ============
+
+    pub fn save_proxy_log(&self, log: &ProxyLog) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO proxy_logs (id, unified_key_id, timestamp, provider, model, input_tokens, output_tokens, latency_ms, success, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                log.id, log.unified_key_id, log.timestamp,
+                log.provider, log.model,
+                log.input_tokens, log.output_tokens,
+                log.latency_ms, log.success as i32, log.error,
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
