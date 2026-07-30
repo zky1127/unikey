@@ -74,14 +74,133 @@ impl Provider for AnthropicProvider {
 
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
-        _api_key: &str,
-        _base_url: Option<&str>,
+        request: &ChatRequest,
+        api_key: &str,
+        base_url: Option<&str>,
     ) -> Result<
         Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>,
         String,
     > {
-        Err("Anthropic streaming not yet implemented".to_string())
+        let model = request.model.clone().unwrap_or_else(|| "claude-sonnet-5-20251001".into());
+        let url = base_url
+            .map(|u| format!("{}/messages", u.trim_end_matches('/')))
+            .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string());
+
+        let (system, messages) = convert_messages(&request.messages);
+
+        let mut payload = serde_json::json!({
+            "model": model,
+            "max_tokens": request.max_tokens,
+            "messages": messages,
+            "stream": true,
+        });
+        if let Some(sys) = system {
+            payload["system"] = serde_json::Value::String(sys);
+        }
+        if request.temperature > 0.0 {
+            payload["temperature"] = serde_json::json!(request.temperature);
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("Anthropic stream request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_body = resp.text().await.unwrap_or_default();
+            return Err(format!("Anthropic API error ({}): {}", status, err_body));
+        }
+
+        let mut byte_stream = resp.bytes_stream();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, String>>(64);
+        let model_owned = model.to_string();
+
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            let mut buffer = String::new();
+            let mut msg_id = String::new();
+            while let Some(chunk_result) = byte_stream.next().await {
+                match chunk_result {
+                    Ok(bytes) => {
+                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        while let Some(line_end) = buffer.find('\n') {
+                            let line = buffer[..line_end].trim().to_string();
+                            buffer = buffer[line_end + 1..].to_string();
+                            if line.is_empty() { continue; }
+                            // Anthropic SSE: "event: type\ndata: {...}"
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                match serde_json::from_str::<serde_json::Value>(data) {
+                                    Ok(json) => {
+                                        let event_type = json["type"].as_str().unwrap_or("");
+                                        match event_type {
+                                            "message_start" => {
+                                                msg_id = json["message"]["id"].as_str().unwrap_or("").to_string();
+                                            }
+                                            "content_block_delta" => {
+                                                let text = json["delta"]["text"].as_str().unwrap_or("");
+                                                let chunk = StreamChunk {
+                                                    id: msg_id.clone(),
+                                                    object: "chat.completion.chunk".to_string(),
+                                                    created: 0,
+                                                    model: model_owned.clone(),
+                                                    choices: vec![StreamChoice {
+                                                        index: 0,
+                                                        delta: StreamDelta {
+                                                            role: None,
+                                                            content: Some(text.to_string()),
+                                                        },
+                                                        finish_reason: None,
+                                                    }],
+                                                };
+                                                if tx.send(Ok(chunk)).await.is_err() { return; }
+                                            }
+                                            "message_delta" => {
+                                                let stop_reason = json["delta"]["stop_reason"].as_str().unwrap_or("stop");
+                                                let chunk = StreamChunk {
+                                                    id: msg_id.clone(),
+                                                    object: "chat.completion.chunk".to_string(),
+                                                    created: 0,
+                                                    model: model_owned.clone(),
+                                                    choices: vec![StreamChoice {
+                                                        index: 0,
+                                                        delta: StreamDelta { role: None, content: None },
+                                                        finish_reason: Some(stop_reason.to_string()),
+                                                    }],
+                                                };
+                                                let _ = tx.send(Ok(chunk)).await;
+                                            }
+                                            "error" => {
+                                                let err = json["error"]["message"].as_str().unwrap_or("Unknown error");
+                                                let _ = tx.send(Err(err.to_string())).await;
+                                                return;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(Err(format!("Parse error: {}", e))).await;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("Stream error: {}", e))).await;
+                        return;
+                    }
+                }
+            }
+        });
+
+        Ok(Box::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
 }
 
