@@ -78,13 +78,17 @@ impl Provider for DeepSeekProvider {
 
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
-        _api_key: &str,
-        _base_url: Option<&str>,
+        request: &ChatRequest,
+        api_key: &str,
+        base_url: Option<&str>,
     ) -> Result<
         Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>,
         String,
     > {
-        Err("DeepSeek streaming not yet implemented".to_string())
+        let url = base_url
+            .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
+            .unwrap_or_else(|| "https://api.deepseek.com/v1/chat/completions".to_string());
+        let model = request.model.clone().unwrap_or_else(|| "deepseek-chat".into());
+        super::stream_openai_compatible(&self.client, &url, api_key, &model, request).await
     }
 }

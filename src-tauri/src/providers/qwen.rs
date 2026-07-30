@@ -1,140 +1,70 @@
 use super::*;
+use futures::Stream;
 
-/// 通义千问 — OpenAI 兼容格式
-pub struct QwenProvider {
-    client: reqwest::Client,
+macro_rules! impl_openai_compatible {
+    ($name:ident, $label:expr, $default_model:expr, $default_url:expr) => {
+        pub struct $name { client: reqwest::Client }
+
+        impl $name {
+            pub fn new() -> Self { Self { client: reqwest::Client::new() } }
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for $name {
+            fn name(&self) -> &str { $label }
+
+            async fn chat(
+                &self, request: &ChatRequest, api_key: &str, base_url: Option<&str>,
+            ) -> Result<ChatResponse, String> {
+                let model = request.model.clone().unwrap_or_else(|| $default_model.into());
+                let url = base_url
+                    .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
+                    .unwrap_or_else(|| $default_url.to_string());
+                call_openai_compatible_chat(&self.client, &url, api_key, &model, request).await
+            }
+
+            async fn chat_stream(
+                &self, request: &ChatRequest, api_key: &str, base_url: Option<&str>,
+            ) -> Result<Box<dyn Stream<Item = Result<StreamChunk, String>> + Unpin + Send>, String> {
+                let model = request.model.clone().unwrap_or_else(|| $default_model.into());
+                let url = base_url
+                    .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
+                    .unwrap_or_else(|| $default_url.to_string());
+                super::stream_openai_compatible(&self.client, &url, api_key, &model, request).await
+            }
+        }
+    };
 }
 
-impl QwenProvider {
-    pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
-    }
-}
+// ====== Provider Definitions ======
 
-#[async_trait::async_trait]
-impl Provider for QwenProvider {
-    fn name(&self) -> &str { "qwen" }
+impl_openai_compatible!(QwenProvider, "qwen", "qwen-plus",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
 
-    async fn chat(
-        &self, request: &ChatRequest, api_key: &str, base_url: Option<&str>,
-    ) -> Result<ChatResponse, String> {
-        let model = request.model.clone().unwrap_or_else(|| "qwen-plus".into());
-        let url = base_url
-            .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
-            .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions".to_string());
+impl_openai_compatible!(ZhipuProvider, "zhipu", "glm-4-plus",
+    "https://open.bigmodel.cn/api/paas/v4/chat/completions");
 
-        call_openai_compatible(&self.client, &url, api_key, &model, request).await
-    }
+impl_openai_compatible!(MoonshotProvider, "moonshot", "moonshot-v1-8k",
+    "https://api.moonshot.cn/v1/chat/completions");
 
-    async fn chat_stream(
-        &self, _request: &ChatRequest, _api_key: &str, _base_url: Option<&str>,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>, String> {
-        Err("Streaming not yet implemented".to_string())
-    }
-}
+impl_openai_compatible!(GeminiProvider, "gemini", "gemini-2.5-flash",
+    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
 
-/// 智谱 GLM — OpenAI 兼容格式
-pub struct ZhipuProvider {
-    client: reqwest::Client,
-}
+impl_openai_compatible!(BaichuanProvider, "baichuan", "baichuan4",
+    "https://api.baichuan-ai.com/v1/chat/completions");
 
-impl ZhipuProvider {
-    pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
-    }
-}
+impl_openai_compatible!(DoubaoProvider, "doubao", "doubao-pro-32k",
+    "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
 
-#[async_trait::async_trait]
-impl Provider for ZhipuProvider {
-    fn name(&self) -> &str { "zhipu" }
+impl_openai_compatible!(MinimaxProvider, "minimax", "abab6.5s-chat",
+    "https://api.minimax.chat/v1/text/chatcompletion_v2");
 
-    async fn chat(
-        &self, request: &ChatRequest, api_key: &str, base_url: Option<&str>,
-    ) -> Result<ChatResponse, String> {
-        let model = request.model.clone().unwrap_or_else(|| "glm-4-plus".into());
-        let url = base_url
-            .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
-            .unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string());
+impl_openai_compatible!(OllamaProvider, "ollama", "llama3",
+    "http://localhost:11434/v1/chat/completions");
 
-        call_openai_compatible(&self.client, &url, api_key, &model, request).await
-    }
+// ====== Shared chat helper (non-streaming) ======
 
-    async fn chat_stream(
-        &self, _request: &ChatRequest, _api_key: &str, _base_url: Option<&str>,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>, String> {
-        Err("Streaming not yet implemented".to_string())
-    }
-}
-
-/// Kimi (月之暗面) — OpenAI 兼容格式
-pub struct MoonshotProvider {
-    client: reqwest::Client,
-}
-
-impl MoonshotProvider {
-    pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
-    }
-}
-
-#[async_trait::async_trait]
-impl Provider for MoonshotProvider {
-    fn name(&self) -> &str { "moonshot" }
-
-    async fn chat(
-        &self, request: &ChatRequest, api_key: &str, base_url: Option<&str>,
-    ) -> Result<ChatResponse, String> {
-        let model = request.model.clone().unwrap_or_else(|| "moonshot-v1-8k".into());
-        let url = base_url
-            .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
-            .unwrap_or_else(|| "https://api.moonshot.cn/v1/chat/completions".to_string());
-
-        call_openai_compatible(&self.client, &url, api_key, &model, request).await
-    }
-
-    async fn chat_stream(
-        &self, _request: &ChatRequest, _api_key: &str, _base_url: Option<&str>,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>, String> {
-        Err("Streaming not yet implemented".to_string())
-    }
-}
-
-/// Gemini — OpenAI 兼容格式
-pub struct GeminiProvider {
-    client: reqwest::Client,
-}
-
-impl GeminiProvider {
-    pub fn new() -> Self {
-        Self { client: reqwest::Client::new() }
-    }
-}
-
-#[async_trait::async_trait]
-impl Provider for GeminiProvider {
-    fn name(&self) -> &str { "gemini" }
-
-    async fn chat(
-        &self, request: &ChatRequest, api_key: &str, base_url: Option<&str>,
-    ) -> Result<ChatResponse, String> {
-        let model = request.model.clone().unwrap_or_else(|| "gemini-2.5-flash".into());
-        let url = base_url
-            .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
-            .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".to_string());
-
-        call_openai_compatible(&self.client, &url, api_key, &model, request).await
-    }
-
-    async fn chat_stream(
-        &self, _request: &ChatRequest, _api_key: &str, _base_url: Option<&str>,
-    ) -> Result<Box<dyn futures::Stream<Item = Result<StreamChunk, String>> + Unpin + Send>, String> {
-        Err("Streaming not yet implemented".to_string())
-    }
-}
-
-// ====== Shared OpenAI-compatible caller ======
-
-async fn call_openai_compatible(
+async fn call_openai_compatible_chat(
     client: &reqwest::Client,
     url: &str,
     api_key: &str,

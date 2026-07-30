@@ -138,3 +138,45 @@ export async function startProxy(port: number): Promise<void> {
 export async function stopProxy(): Promise<void> {
   return invoke("stop_proxy");
 }
+
+// -- Recommendations & Presets -----------------------------------------------
+
+export type UserNeeds = {
+  scenarios: string[];
+  budget: "free" | "balanced" | "premium";
+  quality: "sufficient" | "good" | "best";
+  language: "chinese" | "english" | "mixed";
+};
+
+export type RecommendSlot = {
+  role: string;
+  provider: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  reason: string;
+};
+
+export type Recommendation = {
+  name: string;
+  description: string;
+  estimatedMonthlyCost: string;
+  slots: RecommendSlot[];
+};
+
+export type Preset = {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  slots: RecommendSlot[];
+  tags: string[];
+};
+
+export async function getRecommendations(needs: UserNeeds): Promise<Recommendation[]> {
+  return invoke("get_recommendations", { needs });
+}
+
+export async function getPresets(): Promise<Preset[]> {
+  return invoke("get_presets");
+}

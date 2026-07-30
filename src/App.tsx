@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { Key, Sliders, Layers, Play, Copy, Check, Plus, Trash2, Zap, Loader } from "lucide-react";
+import { Key, Sliders, Layers, Play, Copy, Check, Plus, Trash2, Zap, Loader, Wand2, Download, Sparkles } from "lucide-react";
 import "./App.css";
 import * as api from "./lib/api";
-import type { ProviderKey, ModelConfig, RouteRule, RouteCondition, Scene, UnifiedKey } from "./lib/api";
+import type { ProviderKey, ModelConfig, RouteRule, RouteCondition, Scene, UnifiedKey, Preset, UserNeeds } from "./lib/api";
 
 const PROVIDERS = [
   { id: "openai", name: "OpenAI", models: ["gpt-4o", "gpt-4.1", "o3", "o4-mini"] },
@@ -17,7 +17,7 @@ const PROVIDERS = [
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<"keys" | "tuning" | "scenes" | "unikeys">("keys");
+  const [tab, setTab] = useState<"keys" | "tuning" | "scenes" | "unikeys" | "wizard">("wizard");
 
   return (
     <div className="app">
@@ -27,6 +27,7 @@ export default function App() {
         {tab === "tuning" && <TuningPage />}
         {tab === "scenes" && <ScenesPage />}
         {tab === "unikeys" && <UniKeysPage />}
+        {tab === "wizard" && <WizardPage />}
       </main>
     </div>
   );
@@ -40,6 +41,7 @@ function Sidebar({ tab, setTab }: { tab: string; setTab: (t: any) => void }) {
     { id: "tuning", icon: Sliders, label: "模型微调" },
     { id: "scenes", icon: Layers, label: "场景组合" },
     { id: "unikeys", icon: Play, label: "统一 Key" },
+    { id: "wizard", icon: Wand2, label: "智能推荐" },
   ];
 
   return (
@@ -661,6 +663,216 @@ function UniKeysPage() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// -- Page: 智能推荐 + 预设 ---------------------------------------------------------
+
+function WizardPage() {
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [applying, setApplying] = useState<string | null>(null);
+  const [success, setSuccess] = useState("");
+
+  // Recommendation form state
+  const [scenarios, setScenarios] = useState<string[]>(["编程"]);
+  const [budget, setBudget] = useState<string>("balanced");
+  const [quality, setQuality] = useState<string>("good");
+  const [recommendations, setRecommendations] = useState<api.Recommendation[]>([]);
+
+  const loadPresets = useCallback(async () => {
+    try {
+      setLoading(true);
+      const p = await api.getPresets();
+      setPresets(p);
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadPresets(); }, [loadPresets]);
+
+  const handleRecommend = async () => {
+    try {
+      const needs: UserNeeds = {
+        scenarios,
+        budget: budget as UserNeeds["budget"],
+        quality: quality as UserNeeds["quality"],
+        language: "chinese",
+      };
+      const results = await api.getRecommendations(needs);
+      setRecommendations(results);
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const applyPreset = async (preset: Preset) => {
+    try {
+      setApplying(preset.id);
+      setError("");
+      setSuccess("");
+
+      // 1. Save model configs from the preset slots
+      const configIds: string[] = [];
+
+      for (const slot of preset.slots) {
+        const config: ModelConfig = {
+          id: crypto.randomUUID(),
+          providerKeyId: "", // user needs to assign keys later
+          name: `${preset.name} - ${slot.role}`,
+          model: slot.model,
+          temperature: slot.temperature,
+          topP: 1.0,
+          maxTokens: slot.maxTokens,
+          frequencyPenalty: 0,
+          presencePenalty: 0,
+          systemPrompt: "",
+          createdAt: Math.floor(Date.now() / 1000),
+        };
+        await api.saveModelConfig(config);
+        configIds.push(config.id);
+      }
+
+      // 2. Create a scene with routing rules
+      const rules: RouteRule[] = configIds.map((cid, i) => ({
+        id: crypto.randomUUID(),
+        condition: i === 0 ? { default: true } as RouteCondition : { keyword: { keywords: [preset.tags[i - 1] || preset.tags[0]] } } as RouteCondition,
+        modelConfigId: cid,
+        priority: i + 1,
+      }));
+
+      const scene: Scene = {
+        id: crypto.randomUUID(),
+        name: preset.name,
+        description: preset.description,
+        rules,
+        createdAt: Math.floor(Date.now() / 1000),
+        updatedAt: Math.floor(Date.now() / 1000),
+      };
+      await api.saveScene(scene);
+      setSuccess(`"${preset.name}" 预设已应用！去「场景组合」和「模型微调」绑定你的 Key 即可使用。`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setApplying(null);
+    }
+  };
+
+  const toggleScenario = (s: string) => {
+    setScenarios(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
+  };
+
+  return (
+    <div className="page">
+      <header className="page-header">
+        <h2><Sparkles size={24} style={{ marginRight: 8 }} /> 智能推荐 & 预设方案</h2>
+        <p>不知道用什么模型？告诉我们你的需求，自动推荐最佳组合。或者从预设方案一键套用。</p>
+      </header>
+
+      {error && <div className="error-banner">{error}</div>}
+      {success && <div className="success-banner">{success}</div>}
+
+      {/* Smart Recommendation */}
+      <section className="wizard-section">
+        <h3>🧠 智能推荐</h3>
+        <div className="wizard-form">
+          <div className="wizard-field">
+            <label>使用场景（可多选）</label>
+            <div className="chip-group">
+              {["编程","写作","翻译","数据分析","多模态","日常对话"].map(s => (
+                <button key={s} className={`chip ${scenarios.includes(s) ? "active" : ""}`}
+                  onClick={() => toggleScenario(s)}>{s}</button>
+              ))}
+            </div>
+          </div>
+          <div className="wizard-row">
+            <div className="wizard-field">
+              <label>预算</label>
+              <select value={budget} onChange={e => setBudget(e.target.value)}>
+                <option value="free">尽量免费</option>
+                <option value="balanced">性价比优先</option>
+                <option value="premium">质量优先</option>
+              </select>
+            </div>
+            <div className="wizard-field">
+              <label>质量要求</label>
+              <select value={quality} onChange={e => setQuality(e.target.value)}>
+                <option value="sufficient">够用就行</option>
+                <option value="good">中等偏上</option>
+                <option value="best">追求最好</option>
+              </select>
+            </div>
+          </div>
+          <button className="btn-primary" onClick={handleRecommend}>
+            <Wand2 size={14} /> 生成推荐方案
+          </button>
+        </div>
+
+        {recommendations.length > 0 && (
+          <div className="recommend-results">
+            {recommendations.map((r, i) => (
+              <div key={i} className="recommend-card">
+                <h4>{r.name}</h4>
+                <p className="muted">{r.description}</p>
+                <span className="badge">💰 {r.estimatedMonthlyCost}</span>
+                <div className="slot-list">
+                  {r.slots.map((s, j) => (
+                    <div key={j} className="slot-item">
+                      <strong>{s.role}</strong> → {s.provider} / {s.model}
+                      <br/><span className="muted">T={s.temperature} | max_tokens={s.maxTokens}</span>
+                      <br/><span className="muted">💡 {s.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Presets */}
+      <section className="wizard-section">
+        <h3>📦 预设方案库</h3>
+        <p className="muted">一键套用，无需手动配置</p>
+
+        {loading ? (
+          <div className="loading"><Loader size={24} className="spin" /> 加载中...</div>
+        ) : (
+          <div className="preset-grid">
+            {presets.map(p => (
+              <div key={p.id} className="preset-card">
+                <div className="preset-header">
+                  <span className="preset-icon">{p.icon}</span>
+                  <h4>{p.name}</h4>
+                </div>
+                <p className="muted">{p.description}</p>
+                <div className="tags">
+                  {p.tags.map(t => <span key={t} className="badge badge-rule">{t}</span>)}
+                </div>
+                <div className="slot-mini">
+                  {p.slots.map((s, i) => (
+                    <div key={i} className="slot-line">
+                      <span>{s.role}</span> → <code>{s.provider}/{s.model}</code>
+                    </div>
+                  ))}
+                </div>
+                <button className="btn-primary btn-sm"
+                  onClick={() => applyPreset(p)}
+                  disabled={applying === p.id}>
+                  <Download size={14} /> {applying === p.id ? "应用..." : "一键应用"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

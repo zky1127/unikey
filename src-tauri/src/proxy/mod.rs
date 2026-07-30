@@ -4,10 +4,11 @@ pub mod format;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, Sse},
     routing::post,
     Json, Router,
 };
+use futures::StreamExt;
 use std::sync::Arc;
 
 use crate::providers::*;
@@ -97,43 +98,63 @@ async fn chat_completions(
         .translator
         .translate_request(&request, &resolution.target_format);
 
-    // 8. 调用真实 API
+    // 8. 调用真实 API — 流式或非流式
     let start = std::time::Instant::now();
-    let result = provider
-        .chat(&translated_request, &resolution.api_key, resolution.base_url.as_deref())
-        .await;
-    let _latency = start.elapsed().as_millis() as u64;
+    let stream_mode = request.stream;
+    let provider_clone = resolution.provider.clone();
+    let model_clone = resolution.model.clone();
 
-    // 9. 记录使用日志
-    log_proxy_request(
-        &state.storage,
-        &unified_key,
-        &resolution.provider,
-        &resolution.model,
-        _latency,
-        result.is_ok(),
-        result.as_ref().err().map(|e| e.as_str()),
-    );
+    if stream_mode {
+        // 流式响应
+        let stream_result = provider
+            .chat_stream(&translated_request, &resolution.api_key, resolution.base_url.as_deref())
+            .await;
 
-    // 10. 翻译响应回 OpenAI 格式
-    match result {
-        Ok(response) => {
-            let final_response = state
-                .translator
-                .translate_response(&response, &resolution.target_format);
-            Ok(Json(final_response).into_response())
-        }
-        Err(e) => {
-            Ok((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": e,
-                        "type": "unikey_proxy_error"
+        let _latency = start.elapsed().as_millis() as u64;
+        log_proxy_request(&state.storage, &unified_key, &provider_clone, &model_clone, _latency, stream_result.is_ok(), stream_result.as_ref().err().map(|e| e.as_str()));
+
+        match stream_result {
+            Ok(stream) => {
+                let sse_stream = stream.map(|chunk_result| {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            let json = serde_json::to_string(&chunk).unwrap_or_default();
+                            Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(json))
+                        }
+                        Err(e) => Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(
+                            serde_json::json!({"error": e}).to_string()
+                        )),
                     }
-                })),
-            )
-                .into_response())
+                });
+                Ok(Sse::new(sse_stream).into_response())
+            }
+            Err(e) => {
+                Ok((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": {"message": e, "type": "unikey_proxy_error"}})),
+                ).into_response())
+            }
+        }
+    } else {
+        // 非流式响应
+        let result = provider
+            .chat(&translated_request, &resolution.api_key, resolution.base_url.as_deref())
+            .await;
+        let _latency = start.elapsed().as_millis() as u64;
+
+        log_proxy_request(&state.storage, &unified_key, &provider_clone, &model_clone, _latency, result.is_ok(), result.as_ref().err().map(|e| e.as_str()));
+
+        match result {
+            Ok(response) => {
+                let final_response = state.translator.translate_response(&response, &resolution.target_format);
+                Ok(Json(final_response).into_response())
+            }
+            Err(e) => {
+                Ok((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": {"message": e, "type": "unikey_proxy_error"}})),
+                ).into_response())
+            }
         }
     }
 }

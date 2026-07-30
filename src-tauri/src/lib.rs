@@ -1,5 +1,6 @@
 mod proxy;
 mod providers;
+mod recommend;
 mod storage;
 
 use providers::ProviderRegistry;
@@ -147,6 +148,18 @@ async fn stop_proxy(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+// -- Recommendations & Presets --
+
+#[tauri::command]
+fn get_recommendations(needs: recommend::UserNeeds) -> Vec<recommend::Recommendation> {
+    recommend::recommend(&needs)
+}
+
+#[tauri::command]
+fn get_presets() -> Vec<recommend::Preset> {
+    recommend::get_presets()
+}
+
 // ============ App Setup ============
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -190,6 +203,8 @@ pub fn run() {
             delete_unified_key,
             start_proxy,
             stop_proxy,
+            get_recommendations,
+            get_presets,
         ])
         .run(tauri::generate_context!())
         .expect("error while running UniKey");
